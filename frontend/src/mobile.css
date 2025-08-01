@@ -1,0 +1,229 @@
+/* Mobile and Desktop responsive styles for crypto app */
+
+/* Desktop layout improvements */
+@media (min-width: 769px) {
+  /* Better spacing for desktop */
+  .Polaris-Layout__Section {
+    padding: 0 24px !important;
+  }
+  
+  /* Larger cards with better spacing */
+  .Polaris-Card {
+    margin-bottom: 24px !important;
+  }
+  
+  /* Better page header */
+  .Polaris-Page-Header {
+    padding: 24px !important;
+  }
+  
+  /* More spacious data table */
+  .Polaris-DataTable__Cell {
+    padding: 16px !important;
+    font-size: 14px !important;
+  }
+  
+  .Polaris-DataTable__Cell--header {
+    padding: 20px 16px !important;
+    font-weight: 600 !important;
+  }
+  
+  /* Better button spacing */
+  .Polaris-Button {
+    margin: 0 4px !important;
+  }
+  
+  /* Improved text hierarchy */
+  .Polaris-Text--headingMd {
+    font-size: 1.25rem !important;
+    margin-bottom: 8px !important;
+  }
+  
+  /* Better banner spacing */
+  .Polaris-Banner {
+    margin-bottom: 20px !important;
+  }
+  
+  /* Make page content wider on desktop */
+  .Polaris-Layout {
+    max-width: 1400px !important;
+    margin: 0 auto !important;
+  }
+  
+  /* Better text field sizing */
+  .Polaris-TextField__Input {
+    font-size: 14px !important;
+    padding: 12px 16px !important;
+    min-height: 44px !important;
+  }
+  
+  /* Better select sizing */
+  .Polaris-Select__Input {
+    font-size: 14px !important;
+    padding: 12px 16px !important;
+    min-height: 44px !important;
+  }
+  
+  /* Improved button styling */
+  .Polaris-Button {
+    min-height: 40px !important;
+    padding: 0 20px !important;
+    font-size: 14px !important;
+  }
+  
+  .Polaris-Button--sizeSlim {
+    min-height: 36px !important;
+    padding: 0 16px !important;
+  }
+  
+  /* Better page title */
+  .Polaris-Page-Header__Title {
+    font-size: 2rem !important;
+    line-height: 1.2 !important;
+  }
+  
+  /* Improved subtitle */
+  .Polaris-Page-Header__Description {
+    font-size: 1rem !important;
+    margin-top: 8px !important;
+  }
+}
+
+/* Mobile layout improvements */
+@media (max-width: 768px) {
+  /* Ensure proper page spacing */
+  .Polaris-Page {
+    padding: 0 !important;
+  }
+  
+  /* Better stats grid on mobile */
+  .crypto-stats-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 12px !important;
+  }
+  
+  .crypto-stats-item {
+    padding: 12px !important;
+    background-color: #f6f6f7 !important;
+    border-radius: 8px !important;
+  }
+  
+  .Polaris-Layout__Section {
+    padding: 0 16px !important;
+  }
+  
+  /* Card spacing */
+  .Polaris-Card {
+    margin-bottom: 12px !important;
+  }
+  
+  /* Page header improvements */
+  .Polaris-Page-Header {
+    padding: 16px !important;
+  }
+  
+  .Polaris-Page-Header__Title {
+    font-size: 1.5rem !important;
+    line-height: 1.3 !important;
+  }
+  
+  /* Input field improvements */
+  .Polaris-TextField__Input {
+    font-size: 16px !important; /* Prevents zoom on iOS */
+    padding: 12px !important;
+  }
+  
+  .Polaris-Select__Input {
+    font-size: 16px !important; /* Prevents zoom on iOS */
+  }
+  
+  /* Button improvements */
+  .Polaris-Button {
+    min-height: 44px !important; /* Better touch target */
+    font-size: 14px !important;
+  }
+  
+  .Polaris-Button--sizeSlim {
+    min-height: 36px !important;
+    padding: 0 12px !important;
+  }
+  
+  /* Text improvements */
+  .Polaris-Text {
+    line-height: 1.4 !important;
+    word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
+  }
+  
+  /* Prevent text overflow in cards */
+  .Polaris-Card__Section {
+    overflow: hidden !important;
+  }
+  
+  /* Banner improvements */
+  .Polaris-Banner {
+    margin-bottom: 12px !important;
+  }
+  
+  /* Data table fallback - hide horizontal scroll */
+  .Polaris-DataTable__ScrollContainer {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+  }
+}
+
+/* Smaller mobile screens */
+@media (max-width: 480px) {
+  .Polaris-Layout__Section {
+    padding: 0 12px !important;
+  }
+  
+  .Polaris-Page-Header {
+    padding: 12px !important;
+  }
+  
+  .Polaris-Page-Header__Title {
+    font-size: 1.25rem !important;
+  }
+  
+  /* More aggressive text wrapping for very small screens */
+  .crypto-name-text {
+    max-width: 120px !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+}
+
+/* Utility classes for better mobile UX */
+.mobile-only {
+  display: none !important;
+}
+
+.desktop-only {
+  display: block !important;
+}
+
+@media (max-width: 768px) {
+  .mobile-only {
+    display: block !important;
+  }
+  
+  .desktop-only {
+    display: none !important;
+  }
+}
+
+/* Better touch targets */
+.touch-target {
+  min-height: 44px !important;
+  min-width: 44px !important;
+}
+
+/* Improved card hover states for mobile */
+@media (max-width: 768px) {
+  .crypto-card:active {
+    transform: scale(0.98) !important;
+    transition: transform 0.1s ease !important;
+  }
+}

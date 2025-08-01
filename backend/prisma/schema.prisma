@@ -1,0 +1,69 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Cache table for all crypto list data
+model CryptoListCache {
+  id                          String   @id @default(cuid())
+  cryptoId                    String   @unique
+  symbol                      String
+  name                        String
+  current_price               Float
+  price_change_percentage_24h Float?
+  market_cap                  Float
+  volume_24h                  Float
+  image                       String
+  market_cap_rank             Int
+  cachedAt                    DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+}
+
+// Cache table for detailed crypto data
+model CryptoDetailCache {
+  id                          String   @id @default(cuid())
+  cryptoId                    String   @unique
+  symbol                      String
+  name                        String
+  description                 String?
+  current_price               Float
+  price_change_percentage_24h Float?
+  price_change_percentage_7d  Float?
+  price_change_percentage_30d Float?
+  market_cap                  Float
+  market_cap_rank             Int
+  volume_24h                  Float
+  circulating_supply          Float?
+  total_supply                Float?
+  max_supply                  Float?
+  ath                         Float
+  ath_date                    String
+  atl                         Float
+  atl_date                    String
+  image                       String
+  website                     String?
+  blockchain_site             String?
+  official_forum_url          String?
+  repos_url                   String?
+  cachedAt                    DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+}
+
+// Cache table for price history data
+model PriceHistoryCache {
+  id       String   @id @default(cuid())
+  cryptoId String
+  days     String   // "7", "30", "90", "365"
+  data     String   // JSON string of price history
+  cachedAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@unique([cryptoId, days])
+}

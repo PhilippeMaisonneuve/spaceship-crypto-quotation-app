@@ -1,0 +1,696 @@
+import 'dotenv/config'; // Add this as the FIRST import
+import express from 'express';
+import cors from 'cors';
+import axios from 'axios';
+import { PrismaClient, Prisma } from '@prisma/client';
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+const prisma = new PrismaClient();
+
+// 🔒 SECURITY FIX: Use environment variables
+const COINGECKO_API_KEY = process.env.COINGECKO_API_KEY;
+const COINGECKO_BASE_URL = 'https://api.coingecko.com/api/v3';
+const CACHE_DURATION_MS = 60 * 1000; // 1 minute in milliseconds
+
+// Validate required environment variables
+if (!COINGECKO_API_KEY) {
+  console.error('❌ Error: COINGECKO_API_KEY environment variable is required');
+  process.exit(1);
+}
+
+// Prevent concurrent cache updates
+let isCacheUpdating = false;
+
+// Shared headers for Demo API authentication
+const defaultHeaders = {
+  'x-cg-demo-api-key': COINGECKO_API_KEY
+};
+
+// Helper function to check if cache is still valid (less than 1 minute old)
+const isCacheValid = (cachedAt: Date): boolean => {
+  const now = new Date();
+  const cacheAge = now.getTime() - cachedAt.getTime();
+  return cacheAge < CACHE_DURATION_MS;
+};
+
+// Environment validation
+const validateEnvironment = () => {
+  const requiredVars = ['COINGECKO_API_KEY'];
+  const missing = requiredVars.filter(varName => !process.env[varName]);
+  
+  if (missing.length > 0) {
+    console.error('❌ Missing required environment variables:');
+    missing.forEach(varName => console.error(`   - ${varName}`));
+    console.error('\n💡 Create a .env file based on .env.example');
+    process.exit(1);
+  }
+  
+  console.log('✅ Environment variables validated');
+};
+
+// Call validation on startup
+validateEnvironment();
+
+app.use(cors());
+app.use(express.json());
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'OK', message: 'Crypto API is running', timestamp: new Date().toISOString() });
+});
+
+// Test endpoint
+app.get('/api/test', async (req, res) => {
+  try {
+    const ping = await axios.get(`${COINGECKO_BASE_URL}/ping`, { headers: defaultHeaders });
+    const markets = await axios.get(`${COINGECKO_BASE_URL}/coins/markets`, {
+      headers: defaultHeaders,
+      params: {
+        vs_currency: 'usd',
+        per_page: 250,
+        page: 1,
+        sparkline: false,
+        locale: 'en'
+      }
+    });
+    res.json({
+      success: true,
+      ping: ping.data,
+      markets_count: markets.data.length,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
+    res.status(err.response?.status || 500).json({
+      success: false,
+      status: err.response?.status,
+      error: err.response?.data || err.message
+    });
+  }
+});
+
+// Fetch first 1000 cryptos (4 pages of 250 each) with caching
+app.get('/api/cryptos/all', async (req, res) => {
+  try {
+    const forceRefresh = req.query.refresh; // Check if refresh parameter is present
+    
+    // Check if we have valid cached data (unless force refresh is requested)
+    if (!forceRefresh) {
+      const cachedData = await prisma.cryptoListCache.findMany({
+        orderBy: { market_cap_rank: 'asc' }
+      });
+
+      // If we have cached data, check if the newest entry is still valid
+      if (cachedData.length > 0) {
+        const newestCache = cachedData.reduce((newest: any, current: any) => 
+          current.cachedAt > newest.cachedAt ? current : newest
+        );
+
+        if (isCacheValid(newestCache.cachedAt)) {
+          console.log(`Serving ${cachedData.length} cryptocurrencies from cache`);
+          const formattedData = cachedData.map((c: any) => ({
+            id: c.cryptoId,
+            symbol: c.symbol,
+            name: c.name,
+            current_price: c.current_price,
+            price_change_percentage_24h: c.price_change_percentage_24h,
+            market_cap: c.market_cap,
+            volume_24h: c.volume_24h,
+            image: c.image,
+            market_cap_rank: c.market_cap_rank
+          }));
+
+          return res.json({
+            success: true,
+            total_count: formattedData.length,
+            data: formattedData,
+            cached: true,
+            timestamp: newestCache.cachedAt.toISOString()
+          });
+        }
+      }
+    }
+
+    // Cache is expired, doesn't exist, or refresh was forced
+    const refreshReason = forceRefresh ? 'Force refresh requested' : 'Cache expired or missing';
+    
+    // Check if cache is already being updated
+    if (isCacheUpdating) {
+      console.log('Cache update already in progress, serving existing cache...');
+      // Try to serve existing cache while update is in progress
+      const cachedData = await prisma.cryptoListCache.findMany({
+        orderBy: { market_cap_rank: 'asc' }
+      });
+      
+      if (cachedData.length > 0) {
+        const formattedData = cachedData.map((c: any) => ({
+          id: c.cryptoId,
+          symbol: c.symbol,
+          name: c.name,
+          current_price: c.current_price,
+          price_change_percentage_24h: c.price_change_percentage_24h,
+          market_cap: c.market_cap,
+          volume_24h: c.volume_24h,
+          image: c.image,
+          market_cap_rank: c.market_cap_rank
+        }));
+
+        return res.json({
+          success: true,
+          total_count: formattedData.length,
+          data: formattedData,
+          cached: true,
+          updating: true,
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+    
+    isCacheUpdating = true;
+    console.log(`${refreshReason}, fetching fresh data from API...`);
+    const perPage = 250;
+    const totalPages = 4; // 4 pages × 250 = 1000 coins
+
+    // ⚡ PERFORMANCE FIX: Parallel API calls instead of sequential
+    console.log(`Making ${totalPages} parallel API calls for faster data fetching...`);
+    const startTime = Date.now();
+
+    const apiCalls = Array.from({ length: totalPages }, (_, index) => {
+      const page = index + 1;
+      return axios.get(`${COINGECKO_BASE_URL}/coins/markets`, {
+        headers: defaultHeaders,
+        params: {
+          vs_currency: 'usd',
+          order: 'market_cap_desc',
+          per_page: perPage,
+          page,
+          sparkline: false,
+          locale: 'en'
+        }
+      });
+    });
+
+    // Execute all API calls in parallel
+    const responses = await Promise.all(apiCalls);
+    const all: any[] = [];
+
+    responses.forEach((resp, index) => {
+      const page = index + 1;
+      const data = resp.data;
+      if (Array.isArray(data) && data.length > 0) {
+        all.push(...data);
+        console.log(`Page ${page}: Added ${data.length} coins`);
+      }
+    });
+
+    const fetchTime = Date.now() - startTime;
+    console.log(`✅ Parallel fetch completed in ${fetchTime}ms. Total coins: ${all.length}`)
+
+    // Clear old cache and insert new data in a transaction
+    const cacheData = all.map((c: any) => ({
+      cryptoId: c.id,
+      symbol: c.symbol.toUpperCase(),
+      name: c.name,
+      current_price: c.current_price,
+      price_change_percentage_24h: c.price_change_percentage_24h,
+      market_cap: c.market_cap,
+      volume_24h: c.total_volume,
+      image: c.image,
+      market_cap_rank: c.market_cap_rank
+    }));
+
+    // ⚡ PERFORMANCE FIX: Batch database operations instead of sequential
+    console.log('Updating cache with batch operations...');
+    const dbStartTime = Date.now();
+
+    // Use transaction for atomic updates and better performance
+    await prisma.$transaction(async (tx) => {
+      // Clear old cache first
+      await tx.cryptoListCache.deleteMany({});
+      
+      // Batch insert new data (much faster than individual upserts)
+      await tx.cryptoListCache.createMany({
+        data: cacheData
+      });
+    });
+
+    const dbTime = Date.now() - dbStartTime;
+    console.log(`✅ Database update completed in ${dbTime}ms`);
+
+    const cryptoData = all.map((c: any) => ({
+      id: c.id,
+      symbol: c.symbol.toUpperCase(),
+      name: c.name,
+      current_price: c.current_price,
+      price_change_percentage_24h: c.price_change_percentage_24h,
+      market_cap: c.market_cap,
+      volume_24h: c.total_volume,
+      image: c.image,
+      market_cap_rank: c.market_cap_rank
+    }));
+
+    console.log(`Successfully fetched and cached ${cryptoData.length} cryptocurrencies`);
+    isCacheUpdating = false; // Release lock
+
+    res.json({
+      success: true,
+      total_count: cryptoData.length,
+      data: cryptoData,
+      cached: false,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
+    console.error('API call failed:', err.message);
+    
+    // Try to return cached data as fallback, even if expired
+    try {
+      const cachedData = await prisma.cryptoListCache.findMany({
+        orderBy: { market_cap_rank: 'asc' }
+      });
+
+      if (cachedData.length > 0) {
+        const newestCache = cachedData.reduce((newest: any, current: any) => 
+          current.cachedAt > newest.cachedAt ? current : newest
+        );
+
+        console.log(`API failed, serving ${cachedData.length} cryptocurrencies from cache (last updated: ${newestCache.cachedAt})`);
+        
+        const formattedData = cachedData.map((c: any) => ({
+          id: c.cryptoId,
+          symbol: c.symbol,
+          name: c.name,
+          current_price: c.current_price,
+          price_change_percentage_24h: c.price_change_percentage_24h,
+          market_cap: c.market_cap,
+          volume_24h: c.volume_24h,
+          image: c.image,
+          market_cap_rank: c.market_cap_rank
+        }));
+
+        return res.json({
+          success: true,
+          total_count: formattedData.length,
+          data: formattedData,
+          cached: true,
+          stale: true, // Indicates this is fallback data
+          timestamp: newestCache.cachedAt.toISOString(),
+          warning: 'API temporarily unavailable, serving cached data'
+        });
+      }
+    } catch (cacheErr) {
+      console.error('Failed to retrieve cache as fallback:', cacheErr);
+    }
+
+    // If no cache available, return error
+    isCacheUpdating = false; // Release lock
+    const status = err.response?.status || 500;
+    let msg = 'Failed to fetch data';
+    if (status === 429) msg = 'Rate limit exceeded – too many requests';
+    else if (status === 401) msg = 'Authentication failed – check your API key';
+    res.status(status).json({
+      success: false,
+      status,
+      error: msg,
+      details: err.response?.data || err.message
+    });
+  } finally {
+    isCacheUpdating = false; // Ensure lock is always released
+  }
+});
+
+// Paginated list endpoint
+app.get('/api/cryptos', async (req, res) => {
+  try {
+    const page = parseInt((req.query.page as string) || '1');
+    const perPage = parseInt((req.query.per_page as string) || '100');
+
+    const resp = await axios.get(`${COINGECKO_BASE_URL}/coins/markets`, {
+      headers: defaultHeaders,
+      params: {
+        vs_currency: 'usd',
+        order: 'market_cap_desc',
+        per_page: perPage,
+        page,
+        sparkline: false,
+        locale: 'en'
+      }
+    });
+
+    const data = resp.data;
+    const formatted = data.map((c: any) => ({
+      id: c.id,
+      symbol: c.symbol.toUpperCase(),
+      name: c.name,
+      current_price: c.current_price,
+      price_change_percentage_24h: c.price_change_percentage_24h,
+      market_cap: c.market_cap,
+      volume_24h: c.total_volume,
+      image: c.image,
+      market_cap_rank: c.market_cap_rank
+    }));
+
+    res.json({
+      success: true,
+      data: formatted,
+      pagination: {
+        page,
+        per_page: perPage,
+        has_next: data.length === perPage,
+        has_prev: page > 1
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
+    const status = err.response?.status || 500;
+    let msg = err.response?.data || err.message;
+    if (status === 429) msg = 'Rate limit exceeded – slow down requests';
+    res.status(status).json({
+      success: false,
+      status,
+      error: msg
+    });
+  }
+});
+
+// Get single crypto details with caching
+app.get('/api/cryptos/:id/details', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Check cache first
+    const cachedDetail = await prisma.cryptoDetailCache.findUnique({
+      where: { cryptoId: id }
+    });
+
+    if (cachedDetail && isCacheValid(cachedDetail.cachedAt)) {
+      console.log(`Serving details for ${id} from cache`);
+      const formatted = {
+        id: cachedDetail.cryptoId,
+        symbol: cachedDetail.symbol,
+        name: cachedDetail.name,
+        description: cachedDetail.description,
+        current_price: cachedDetail.current_price,
+        price_change_percentage_24h: cachedDetail.price_change_percentage_24h,
+        price_change_percentage_7d: cachedDetail.price_change_percentage_7d,
+        price_change_percentage_30d: cachedDetail.price_change_percentage_30d,
+        market_cap: cachedDetail.market_cap,
+        market_cap_rank: cachedDetail.market_cap_rank,
+        volume_24h: cachedDetail.volume_24h,
+        circulating_supply: cachedDetail.circulating_supply,
+        total_supply: cachedDetail.total_supply,
+        max_supply: cachedDetail.max_supply,
+        ath: cachedDetail.ath,
+        ath_date: cachedDetail.ath_date,
+        atl: cachedDetail.atl,
+        atl_date: cachedDetail.atl_date,
+        image: cachedDetail.image,
+        website: cachedDetail.website,
+        blockchain_site: cachedDetail.blockchain_site,
+        official_forum_url: cachedDetail.official_forum_url,
+        repos_url: cachedDetail.repos_url
+      };
+
+      return res.json({
+        success: true,
+        data: formatted,
+        cached: true,
+        timestamp: cachedDetail.cachedAt.toISOString()
+      });
+    }
+
+    // Fetch fresh data from API
+    console.log(`Fetching fresh details for ${id} from API...`);
+    const resp = await axios.get(`${COINGECKO_BASE_URL}/coins/${id}`, {
+      headers: defaultHeaders,
+      params: {
+        localization: false,
+        tickers: false,
+        market_data: true,
+        community_data: false,
+        developer_data: false,
+        sparkline: false
+      }
+    });
+
+    const data = resp.data;
+    const formatted = {
+      id: data.id,
+      symbol: data.symbol.toUpperCase(),
+      name: data.name,
+      description: data.description?.en || 'No description available',
+      current_price: data.market_data.current_price.usd,
+      price_change_percentage_24h: data.market_data.price_change_percentage_24h,
+      price_change_percentage_7d: data.market_data.price_change_percentage_7d,
+      price_change_percentage_30d: data.market_data.price_change_percentage_30d,
+      market_cap: data.market_data.market_cap.usd,
+      market_cap_rank: data.market_cap_rank,
+      volume_24h: data.market_data.total_volume.usd,
+      circulating_supply: data.market_data.circulating_supply,
+      total_supply: data.market_data.total_supply,
+      max_supply: data.market_data.max_supply,
+      ath: data.market_data.ath.usd,
+      ath_date: data.market_data.ath_date.usd,
+      atl: data.market_data.atl.usd,
+      atl_date: data.market_data.atl_date.usd,
+      image: data.image?.large || data.image?.small,
+      website: data.links?.homepage?.[0] || '',
+      blockchain_site: data.links?.blockchain_site?.[0] || '',
+      official_forum_url: data.links?.official_forum_url?.[0] || '',
+      repos_url: data.links?.repos_url?.github?.[0] || ''
+    };
+
+    // Update cache
+    await prisma.cryptoDetailCache.upsert({
+      where: { cryptoId: id },
+      update: {
+        symbol: formatted.symbol,
+        name: formatted.name,
+        description: formatted.description,
+        current_price: formatted.current_price,
+        price_change_percentage_24h: formatted.price_change_percentage_24h,
+        price_change_percentage_7d: formatted.price_change_percentage_7d,
+        price_change_percentage_30d: formatted.price_change_percentage_30d,
+        market_cap: formatted.market_cap,
+        market_cap_rank: formatted.market_cap_rank,
+        volume_24h: formatted.volume_24h,
+        circulating_supply: formatted.circulating_supply,
+        total_supply: formatted.total_supply,
+        max_supply: formatted.max_supply,
+        ath: formatted.ath,
+        ath_date: formatted.ath_date,
+        atl: formatted.atl,
+        atl_date: formatted.atl_date,
+        image: formatted.image,
+        website: formatted.website,
+        blockchain_site: formatted.blockchain_site,
+        official_forum_url: formatted.official_forum_url,
+        repos_url: formatted.repos_url,
+        cachedAt: new Date()
+      },
+      create: {
+        cryptoId: id,
+        symbol: formatted.symbol,
+        name: formatted.name,
+        description: formatted.description,
+        current_price: formatted.current_price,
+        price_change_percentage_24h: formatted.price_change_percentage_24h,
+        price_change_percentage_7d: formatted.price_change_percentage_7d,
+        price_change_percentage_30d: formatted.price_change_percentage_30d,
+        market_cap: formatted.market_cap,
+        market_cap_rank: formatted.market_cap_rank,
+        volume_24h: formatted.volume_24h,
+        circulating_supply: formatted.circulating_supply,
+        total_supply: formatted.total_supply,
+        max_supply: formatted.max_supply,
+        ath: formatted.ath,
+        ath_date: formatted.ath_date,
+        atl: formatted.atl,
+        atl_date: formatted.atl_date,
+        image: formatted.image,
+        website: formatted.website,
+        blockchain_site: formatted.blockchain_site,
+        official_forum_url: formatted.official_forum_url,
+        repos_url: formatted.repos_url
+      }
+    });
+
+    res.json({
+      success: true,
+      data: formatted,
+      cached: false,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
+    const status = err.response?.status || 500;
+    let msg = 'Failed to fetch crypto details';
+    if (status === 429) msg = 'Rate limit exceeded – too many requests';
+    else if (status === 401) msg = 'Authentication failed – check your API key';
+    res.status(status).json({
+      success: false,
+      status,
+      error: msg,
+      details: err.response?.data || err.message
+    });
+  }
+});
+
+// Get crypto price history with caching
+app.get('/api/cryptos/:id/history', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const days = (req.query.days as string) || '365';
+    
+    // Check cache first
+    const cachedHistory = await prisma.priceHistoryCache.findUnique({
+      where: { 
+        cryptoId_days: {
+          cryptoId: id,
+          days: days
+        }
+      }
+    });
+
+    if (cachedHistory && isCacheValid(cachedHistory.cachedAt)) {
+      console.log(`Serving price history for ${id} (${days} days) from cache`);
+      const data = JSON.parse(cachedHistory.data);
+      return res.json({
+        success: true,
+        data,
+        cached: true,
+        timestamp: cachedHistory.cachedAt.toISOString()
+      });
+    }
+
+    // Fetch fresh data from API
+    console.log(`Fetching fresh price history for ${id} (${days} days) from API...`);
+    const resp = await axios.get(`${COINGECKO_BASE_URL}/coins/${id}/market_chart`, {
+      headers: defaultHeaders,
+      params: {
+        vs_currency: 'usd',
+        days,
+        interval: days === '1' ? 'hourly' : 'daily'
+      }
+    });
+
+    const prices = resp.data.prices;
+    const formatted = prices.map(([timestamp, price]: [number, number]) => ({
+      date: new Date(timestamp).toISOString(),
+      price
+    }));
+
+    // Update cache
+    await prisma.priceHistoryCache.upsert({
+      where: { 
+        cryptoId_days: {
+          cryptoId: id,
+          days: days
+        }
+      },
+      update: {
+        data: JSON.stringify(formatted),
+        cachedAt: new Date()
+      },
+      create: {
+        cryptoId: id,
+        days: days,
+        data: JSON.stringify(formatted)
+      }
+    });
+
+    res.json({
+      success: true,
+      data: formatted,
+      cached: false,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
+    const status = err.response?.status || 500;
+    let msg = 'Failed to fetch price history';
+    if (status === 429) msg = 'Rate limit exceeded – too many requests';
+    else if (status === 401) msg = 'Authentication failed – check your API key';
+    res.status(status).json({
+      success: false,
+      status,
+      error: msg,
+      details: err.response?.data || err.message
+    });
+  }
+});
+
+// Search CoinGecko API directly by name or symbol
+app.get('/api/search/:query', async (req, res) => {
+  try {
+    const { query } = req.params;
+    console.log(`Searching CoinGecko API for: ${query}`);
+    
+    // First try to search by name/symbol using the search endpoint
+    const searchResp = await axios.get(`${COINGECKO_BASE_URL}/search`, {
+      headers: defaultHeaders,
+      params: {
+        query: query
+      }
+    });
+
+    const searchResults = searchResp.data.coins || [];
+    
+    if (searchResults.length === 0) {
+      return res.json({
+        success: true,
+        data: [],
+        message: `No cryptocurrencies found matching "${query}"`
+      });
+    }
+
+    // Get detailed market data for the found coins (up to 10 results)
+    const coinIds = searchResults.slice(0, 10).map((coin: any) => coin.id).join(',');
+    
+    const marketResp = await axios.get(`${COINGECKO_BASE_URL}/coins/markets`, {
+      headers: defaultHeaders,
+      params: {
+        vs_currency: 'usd',
+        ids: coinIds,
+        order: 'market_cap_desc',
+        per_page: 10,
+        page: 1,
+        sparkline: false,
+        locale: 'en'
+      }
+    });
+
+    const marketData = marketResp.data;
+    const formattedData = marketData.map((c: any) => ({
+      id: c.id,
+      symbol: c.symbol.toUpperCase(),
+      name: c.name,
+      current_price: c.current_price,
+      price_change_percentage_24h: c.price_change_percentage_24h,
+      market_cap: c.market_cap,
+      volume_24h: c.total_volume,
+      image: c.image,
+      market_cap_rank: c.market_cap_rank
+    }));
+
+    res.json({
+      success: true,
+      data: formattedData,
+      query: query,
+      found_count: formattedData.length,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
+    const status = err.response?.status || 500;
+    let msg = 'Failed to search cryptocurrencies';
+    if (status === 429) msg = 'Rate limit exceeded – too many requests';
+    else if (status === 401) msg = 'Authentication failed – check your API key';
+    res.status(status).json({
+      success: false,
+      status,
+      error: msg,
+      details: err.response?.data || err.message
+    });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`🚀 Crypto API server running on port ${PORT}`);
+});
