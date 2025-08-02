@@ -48,17 +48,12 @@ docker-compose up --build
 ### 5. Open Your Browser
 - **🌐 Main App**: http://localhost
 - **🔧 API Endpoints**: http://localhost:3001
-
-## 🚨 Important Notes
-
-- **⚠️ API Key Required**: The application will not work without a valid CoinGecko API key
-- **🐳 Docker Required**: Make sure Docker Desktop is running before executing docker-compose commands
 - **⏱️ First Launch**: Initial startup may take a few minutes as it builds the containers and fetches crypto data
 
 ## 📊 Data Caching & Performance
 
 ### ⏰ Data Delay Information
-This application implements a **60-second cache** system for optimal performance and API rate limit management:
+This application implements by default a **60-second cache** system for optimal performance and API rate limit management:
 
 - **Total Data Delay**: ~120 seconds (60s cache + 60s CoinGecko free tier delay)
 - **Cache Duration**: 60 seconds (customizable via `CACHE_DURATION_MS` in `.env`)
@@ -193,7 +188,6 @@ If you encounter other issues:
 - 📊 Live crypto prices and market data
 - 🔍 Search and filter cryptocurrencies  
 - 📈 Detailed crypto information and statistics
-- ⚡ Intelligent 60-second caching for optimal performance
 - 📱 Responsive design for all devices
 - 🚀 Fast Docker-based deployment
 - 🔧 Customizable cache settings for different use cases
