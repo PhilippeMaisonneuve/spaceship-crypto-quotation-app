@@ -3,7 +3,7 @@
 A clean, responsive cryptocurrency price tracker built with React and Node.js.
 
 ## 🌐 Live Demo
-**👉 [View Live Demo](https://spaceship-crypto-quotation-app-tzuu-ptmfahfvy.vercel.app/)**
+**👉 [View Live Demo](spaceship-crypto-quotation-app-tzuu.vercel.app)**
 
 ## ⚡ Quick Start
 
